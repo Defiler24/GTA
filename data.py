@@ -35,6 +35,20 @@ AllTest = {'C': '/ssd1/data/face/age_data/data/CACD/txt/small_noise_images_rank3
             'M': '/ssd2/baozenghao/data/Morph/txt/RANDOM_80_20/morph_random_80_20_test.txt',
             'U': '/ssd1/data/face/age_data/data/UTKFace/txt/utkface_test.txt'}
 
+# rootdir = 
+# trainlist = 
+
+def loadcsv(data_dir, file):
+    imgs = list()
+    with open(file, mode='r') as csv_file:
+        gt = csv.reader(csv_file, delimiter=',')
+        for row in gt:
+            img_name, age = row[0], row[1]
+            img_path = os.path.join(data_dir, img_name)
+            age = int(round(float(age)))
+            imgs.append((img_path, age))
+    return imgs
+
 def normal_sampling(mean, label_k, std=1):
     return math.exp(-(label_k-mean)**2/(2*std**2))/(math.sqrt(2*math.pi)*std)
 
@@ -50,6 +64,31 @@ def loadage(data_dir, file, shuffle=True):
     if shuffle:
         random.shuffle(imgs)
     return imgs
+
+# class MIVIA(data.Dataset):
+#     def __init__(self, transform):
+#         imgs = loadcsv(rootdir, trainlist) 
+#         random.shuffle(imgs)
+#         self.imgs = imgs
+#         self.transform = transform
+#     def __getitem__(self, item):
+#         img_path, age = self.imgs[item]
+#         img = Image.open(img_path).convert("RGB")
+
+#         label = [normal_sampling(int(age), i) for i in range(101)]
+#         label = [i if i > 1e-15 else 1e-15 for i in label]
+#         label = torch.Tensor(label)
+
+#         seq_rand = iaa.Sequential([iaa.RandAugment(n=2, m=12)])
+
+#         cv_img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+#         cv_img = seq_rand.augment_image(image=cv_img)
+#         img = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
+
+#         img = self.transform(img)
+#         return img, age, label
+#     def __len__(self):
+#         return len(self.imgs)
 
 class Train(data.Dataset):
     def __init__(self, dataset, transform):
@@ -67,7 +106,7 @@ class Train(data.Dataset):
         label = torch.Tensor(label)
 
         # seq_rand = iaa.Sequential([iaa.RandAugment(n=2, m=10)])
-        seq_rand = iaa.Sequential([iaa.RandAugment(n=14, m=28)])
+        seq_rand = iaa.Sequential([iaa.RandAugment(n=2, m=9)])
 
         cv_img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
         cv_img = seq_rand.augment_image(image=cv_img)

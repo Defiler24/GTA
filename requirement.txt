@@ -1,0 +1,7 @@
+python = 3.8
+pytorch 1.8.0 
+torchvision 
+imgaug
+timm
+opencv-python 
+efficientnet_pytorch
