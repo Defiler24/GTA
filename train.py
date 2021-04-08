@@ -38,7 +38,7 @@ parser.add_argument('--checkpoints', type=str, default=None)
 parser.add_argument('--gradient_clip', type=float, default=2.)
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('-p', '--print-freq', default=10, type=int, metavar='N')
-parser.add_argument('--schedule', type=int, nargs='+', default=[40,120,140])
+parser.add_argument('--schedule', type=int, nargs='+', default=[20,60,80])
 
 def reduce_mean(tensor, nprocs):
     rt = tensor.clone()
@@ -73,7 +73,7 @@ def main_worker(local_rank, nprocs, args):
 
     args.batch_size = int(args.batch_size / nprocs)
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
-    classifier = torch.nn.parallel.DistributedDataParallel(classifier, device_ids=[local_rank], find_unused_parameters=True)
+    classifier = torch.nn.parallel.DistributedDataParallel(classifier, device_ids=[local_rank])
 
     optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
     optimizer_class = torch.optim.SGD(classifier.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
@@ -86,8 +86,8 @@ def main_worker(local_rank, nprocs, args):
         classifier.load_state_dict(checkpoints['classifier_state_dict'])
 
     transform_t = transforms.Compose([
-        # transforms.Resize(size=(224,224),interpolation=3),
-        transforms.RandomResizedCrop(224, scale=(0.1,2.0)),
+        transforms.Resize(size=(224,224),interpolation=3),
+        # transforms.RandomResizedCrop(224, scale=(0.1,2.0)),
         transforms.RandomHorizontalFlip(),
         # transforms.RandomRotation(degrees=(-10,10)),
         transforms.ColorJitter(brightness=0.125, contrast=0.125, saturation=0.125),
@@ -123,6 +123,7 @@ def main_worker(local_rank, nprocs, args):
         )
 
     best_mae = 100.0
+    ### Stage 1 ###
     for epoch in range(args.start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
@@ -134,18 +135,49 @@ def main_worker(local_rank, nprocs, args):
             writer.add_scalar('Train_loss', train_metrics['loss'], epoch + 1)
             writer.add_scalar('Val_mae', val_metrics['mae'], epoch + 1)
 
-            # writer.add_scalars('Val', {
-            #     'mae': val_metrics['mae'],
-            # }, epoch + 1)        
-
         # lr_scheduler.step()
         adjust_learning_rate(optimizer, epoch, args)
+        adjust_learning_rate(optimizer_class, epoch, args)
 
         is_best = val_metrics['mae'] < best_mae 
         best_mae = min(val_metrics['mae'], best_mae)
 
         if args.local_rank == 0 and is_best:
             save_checkpoint(best_mae, model, classifier, optimizer, optimizer_class, args, epoch)
+    
+    print('*** Best mae: {0}'.format(best_mae))
+
+
+    ### Stage 2 ###
+
+    optimizer2 = torch.optim.SGD(model.parameters(), 0.001, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
+    optimizer_class2 = torch.optim.SGD(classifier.parameters(), 0.001, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
+
+    train_dataset2 = Train("M", transform_t)
+    train_sampler2 = torch.utils.data.distributed.DistributedSampler(train_dataset2)
+    train_loader2 = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, num_workers=2, pin_memory=True, sampler=train_sampler)
+
+    for epoch in range(args.epochs, args.epochs + 100):
+        train_sampler2.set_epoch(epoch)
+        val_sampler.set_epoch(epoch)
+
+        train_metrics = train(train_loader2, model, classifier, optimizer2, optimizer_class2, epoch, local_rank, args)
+        val_metrics = validate(val_loader, model, classifier, local_rank, args)
+
+        if args.local_rank == 0:
+            writer.add_scalar('Train_loss', train_metrics['loss'], epoch + 1)
+            writer.add_scalar('Val_mae', val_metrics['mae'], epoch + 1)
+
+        # lr_scheduler.step()
+        args.schedule = [230,240]
+        adjust_learning_rate(optimizer2, epoch, args)
+        adjust_learning_rate(optimizer_class2, epoch, args)
+
+        is_best = val_metrics['mae'] < best_mae 
+        best_mae = min(val_metrics['mae'], best_mae)
+
+        if args.local_rank == 0 and is_best:
+            save_checkpoint(best_mae, model, classifier, optimizer2, optimizer_class2, args, epoch)
     
     print('*** Best mae: {0}'.format(best_mae))
 

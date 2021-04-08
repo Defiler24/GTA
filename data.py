@@ -19,20 +19,20 @@ RootDir = {'C':'/ssd1/data/face/age_data/data/CACD/CACD2000_arccropped/',
            'E':'/ssd1/data/face/age_data/data/MegaAge/megaage_asian_arccropped/',
            'I':'/ssd1/baozenghao/data/IMDB-WIKI/',
             'MS': '/ssd1/data/face/MS_Celeb_1M/imgs',
-           'M':'/ssd1/data/face/age_data/data/Morph/Album2_arccropped/',
+           'M':'/ssd2/baozenghao/data/Morph/Album2_arccropped/',
            'U': '/ssd1/data/face/age_data/data/UTKFace/UTKFACE_arccropped/'}
 
 AllTrain = {'C': '/ssd1/data/face/age_data/data/CACD/txt/big_noise_images_shuffle_renamed.txt',
             'E': '/ssd1/data/face/age_data/data/MegaAge/txt/MegaAge_Asian_train.txt',
             'I': '/ssd1/baozenghao/data/IMDB-WIKI/txt/imdb_wiki_CLEAN_train.txt',
             'MS': '/ssd1/data/face/MS_Celeb_1M/txt/list.txt',
-            'M': '/ssd1/data/face/age_data/data/Morph/txt/RANDOM_80_20/morph_random_80_20_train.txt',
+            'M': '/ssd2/baozenghao/data/Morph/txt/RANDOM_80_20/morph_random_80_20_train.txt',
             'U': '/ssd1/data/face/age_data/data/UTKFace/txt/utkface_train.txt'}
 
 AllTest = {'C': '/ssd1/data/face/age_data/data/CACD/txt/small_noise_images_rank345_renamed.txt',
             'E': '/ssd1/data/face/age_data/data/MegaAge/txt/MegaAge_Asian_test.txt',
             'I': '/ssd1/baozenghao/data/IMDB-WIKI/txt/imdb_wiki_CLEAN_test.txt',
-            'M': '/ssd1/data/face/age_data/data/Morph/txt/RANDOM_80_20/morph_random_80_20_test.txt',
+            'M': '/ssd2/baozenghao/data/Morph/txt/RANDOM_80_20/morph_random_80_20_test.txt',
             'U': '/ssd1/data/face/age_data/data/UTKFace/txt/utkface_test.txt'}
 
 def normal_sampling(mean, label_k, std=1):
