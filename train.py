@@ -23,22 +23,22 @@ from torch.utils.tensorboard import SummaryWriter
 
 from efficientnet_pytorch import EfficientNet
 from model import ClassifierA
-from data import Train, Test
+from data import Train, Test, Train2
 
 parser = argparse.ArgumentParser(description='Age Estimate Training and Evaluating')
 
-parser.add_argument('--batch_size', type=int, default=128)
+parser.add_argument('--batch_size', type=int, default=256)
 parser.add_argument('--lr', type=float, default=0.01)#0.001
 parser.add_argument('--weight_decay', type=float, default=0.0005)
 parser.add_argument('--momentum', type=float, default=0.9)
-parser.add_argument('--epochs', type=int, default=150)
+parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N')
 parser.add_argument('--evaluation', type=bool, default=False)
 parser.add_argument('--checkpoints', type=str, default=None)
 parser.add_argument('--gradient_clip', type=float, default=2.)
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('-p', '--print-freq', default=10, type=int, metavar='N')
-parser.add_argument('--schedule', type=int, nargs='+', default=[20,60,80])
+parser.add_argument('--schedule', type=int, nargs='+', default=[20,80,90])
 
 def reduce_mean(tensor, nprocs):
     rt = tensor.clone()
@@ -119,7 +119,7 @@ def main_worker(local_rank, nprocs, args):
     
     if args.local_rank == 0:
         writer = SummaryWriter(
-            log_dir=f'runs/Res18_pre2_{args.batch_size}_{datetime.datetime.now()}'
+            log_dir=f'runs/B4_n=12_m=24_bs={args.batch_size}'
         )
 
     best_mae = 100.0
@@ -142,7 +142,7 @@ def main_worker(local_rank, nprocs, args):
         is_best = val_metrics['mae'] < best_mae 
         best_mae = min(val_metrics['mae'], best_mae)
 
-        if args.local_rank == 0 and is_best:
+        if args.local_rank == 0 and is_best and epoch > 80:
             save_checkpoint(best_mae, model, classifier, optimizer, optimizer_class, args, epoch)
     
     print('*** Best mae: {0}'.format(best_mae))
@@ -153,7 +153,7 @@ def main_worker(local_rank, nprocs, args):
     optimizer2 = torch.optim.SGD(model.parameters(), 0.001, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
     optimizer_class2 = torch.optim.SGD(classifier.parameters(), 0.001, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
 
-    train_dataset2 = Train("M", transform_t)
+    train_dataset2 = Train2("M", transform_t)
     train_sampler2 = torch.utils.data.distributed.DistributedSampler(train_dataset2)
     train_loader2 = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, num_workers=2, pin_memory=True, sampler=train_sampler)
 
@@ -169,7 +169,7 @@ def main_worker(local_rank, nprocs, args):
             writer.add_scalar('Val_mae', val_metrics['mae'], epoch + 1)
 
         # lr_scheduler.step()
-        args.schedule = [230,240]
+        args.schedule = [180,190]
         adjust_learning_rate(optimizer2, epoch, args)
         adjust_learning_rate(optimizer_class2, epoch, args)
 

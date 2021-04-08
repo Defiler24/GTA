@@ -78,6 +78,26 @@ class Train(data.Dataset):
     def __len__(self):
         return len(self.imgs)
 
+class Train2(data.Dataset):
+    def __init__(self, dataset, transform):
+        imgs = loadage(RootDir[dataset], AllTrain[dataset]) 
+        UsedImages = imgs
+        random.shuffle(UsedImages)
+        self.imgs = UsedImages
+        self.transform = transform
+    def __getitem__(self, item):
+        img_path, age = self.imgs[item]
+        img = Image.open(img_path).convert("RGB")
+
+        label = [normal_sampling(int(age), i) for i in range(101)]
+        label = [i if i > 1e-15 else 1e-15 for i in label]
+        label = torch.Tensor(label)
+
+        img = self.transform(img)
+        return img, age, label
+    def __len__(self):
+        return len(self.imgs)
+
 class Test(data.Dataset):
     def __init__(self, dataset, transform):
         imgs = loadage(RootDir[dataset], AllTest[dataset])
