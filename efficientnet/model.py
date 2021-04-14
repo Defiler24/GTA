@@ -214,7 +214,7 @@ class EfficientNet(nn.Module):
         # Final linear layer
         self._avg_pooling = nn.AdaptiveAvgPool2d(1)
         self._dropout = nn.Dropout(self._global_params.dropout_rate)
-        self.feature_num = out_channels
+        # print(out_channels)
         self._fc = nn.Linear(out_channels, self._global_params.num_classes)
         self._swish = MemoryEfficientSwish()
 
@@ -310,12 +310,12 @@ class EfficientNet(nn.Module):
         """
         # Convolution layers
         x = self.extract_features(inputs)
-        features = x.view(x.size(0), -1) # add features by bzh
         # Pooling and final linear layer
         x = self._avg_pooling(x)
         if self._global_params.include_top:
             x = x.flatten(start_dim=1)
             x = self._dropout(x)
+            features = x.view(x.size(0), -1) # add features by bzh
             x = self._fc(x)
         
         if not isda:

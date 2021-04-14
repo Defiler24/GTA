@@ -11,9 +11,9 @@ class EstimatorCV():
         self.Amount = torch.zeros(class_num).cuda()
 
     def update_CV(self, features, labels):
-        N = features.size(0)
+        N = features.size(0)#bs
         C = self.class_num
-        A = features.size(1)
+        A = features.size(1)#output_channel
 
         NxCxFeatures = features.view(
             N, 1, A
@@ -45,6 +45,10 @@ class EstimatorCV():
 
         weight_CV[weight_CV != weight_CV] = 0
 
+        # print("weight_CV", weight_CV.size())
+        # print("Avesize", self.Ave.size())
+        # print("ave_C*A", ave_CxA.size())
+
         additional_CV = weight_CV.mul(1 - weight_CV).mul((self.Ave - ave_CxA).pow(2))
 
         self.CoVariance = (self.CoVariance.mul(1 - weight_CV) + var_temp
@@ -71,7 +75,7 @@ class ISDALoss(nn.Module):
         C = self.class_num
         A = features.size(1)
 
-        weight_m = list(fc.parameters())[0]
+        weight_m = list(fc.parameters())[0]#(101,1792)
 
         NxW_ij = weight_m.expand(N, C, A)
 

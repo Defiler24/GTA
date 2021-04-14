@@ -21,25 +21,33 @@ import transforms
 from torch.cuda.amp import autocast as autocast
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
+from torch.nn import functional as F
 
-from efficientnet_pytorch import EfficientNet
-from model import ClassifierA
+
+from efficientnet import EfficientNet
+from models import create_model, safe_model_name, resume_checkpoint, load_checkpoint,\
+    convert_splitbn_model, model_parameters
+from ISDA import ISDALoss
 from data import TrainM, TestM
 
 parser = argparse.ArgumentParser(description='Age Estimate Training and Evaluating')
 
-parser.add_argument('--batch_size', type=int, default=256)
+parser.add_argument('--batch_size', type=int, default=224)
 parser.add_argument('--lr', type=float, default=0.01)#0.001
-parser.add_argument('--weight_decay', type=float, default=0.0005)
+parser.add_argument('--weight_decay', type=float, default=4e-5)
 parser.add_argument('--momentum', type=float, default=0.9)
-parser.add_argument('--epochs', type=int, default=25)
+parser.add_argument('--epochs', type=int, default=75)
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N')
 parser.add_argument('--evaluation', type=bool, default=False)
 parser.add_argument('--checkpoints', type=str, default=None)
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('-p', '--print-freq', default=10, type=int, metavar='N')
-parser.add_argument('--schedule', type=int, nargs='+', default=[5,15,20])
+# parser.add_argument('--schedule', type=int, nargs='+', default=[5,25,30,35])
 parser.add_argument('--seed', default=24, type=int)
+parser.add_argument('--experiment', type=str, default='RegNet_e40_')
+parser.add_argument('--lambda_0', default=7.5, type=float,
+                    help='The hyper-parameter \lambda_0 for ISDA, select from {1, 2.5, 5, 7.5, 10}. '
+                         'We adopt 1 for DenseNets and 7.5 for ResNets and ResNeXts, except for using 5 for ResNet-101.')
 
 def reduce_mean(tensor, nprocs):
     rt = tensor.clone()
@@ -54,16 +62,15 @@ def kl_loss(inputs, labels):
     loss = loss.sum()/loss.shape[0]
     return loss
 
-def save_checkpoint(best_mae, model, classifier, optimizer, optimizer_class, args, epoch):
+def save_checkpoint(best_mae, model, optimizer, criterion, args, epoch):
     print('Best Model Saving...')
     torch.save({
         'model_state_dict': model.state_dict(),
-        'epoch': epoch,
+        'epoch': epoch + 1,
         'optimizer_state_dict': optimizer.state_dict(),
-        'classifier_state_dict': classifier.state_dict(),
-        'optimizer_class_state_dict': optimizer_class.state_dict(),
+        # 'criterion': criterion,
         'best_mae': best_mae
-    }, os.path.join('models', str(epoch) + '_model.pth'))
+    }, os.path.join('models', args.experiment + str(epoch) + '_model.pth'))
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -144,30 +151,31 @@ def main():
 def main_worker(local_rank, nprocs, args):
     torch.distributed.init_process_group(backend='nccl', init_method='env://')
 
-    model = EfficientNet.from_pretrained('efficientnet-b4')
-    classifier = ClassifierA()
+    # model = EfficientNet.from_pretrained('efficientnet-b4', num_classes=101)
+    model = create_model('regnety_320', pretrained=True, num_classes=101)
     if args.local_rank == 0:
         print('Number of model parameters: {}'.format(sum([p.data.nelement() for p in model.parameters()])))
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    classifier = torch.nn.SyncBatchNorm.convert_sync_batchnorm(classifier)
 
     torch.cuda.set_device(local_rank)
     model.cuda(local_rank)
-    classifier.cuda(local_rank)
 
     args.batch_size = int(args.batch_size / nprocs)
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
-    classifier = torch.nn.parallel.DistributedDataParallel(classifier, device_ids=[local_rank])
+
+    # feature_num = model.feature_num
+    # criterion = ISDALoss(1792, 101).cuda(local_rank)
+    criterion = None
 
     optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
-    optimizer_class = torch.optim.SGD(classifier.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
 
-    # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2, eta_min=0)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2, eta_min=0)
 
     if args.checkpoints is not None:
-        checkpoints = torch.load(args.checkpoints, map_location=torch.device('cpu'))
+        checkpoints = torch.load(args.checkpoints, map_location=torch.device('cuda:0'))
         model.load_state_dict(checkpoints['model_state_dict']) 
-        classifier.load_state_dict(checkpoints['classifier_state_dict'])
+        criterion =  checkpoints['criterion']
+        args.start_epoch = checkpoints['epoch']
 
     transform_t = transforms.Compose([
         transforms.Resize(size=(224,224),interpolation=3),
@@ -196,13 +204,13 @@ def main_worker(local_rank, nprocs, args):
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, num_workers=4, pin_memory=True, sampler=val_sampler)
 
     if args.evaluation:
-        val_metrics = validate(val_loader, model, classifier, local_rank, args)
+        val_metrics = validate(val_loader, model, local_rank, args)
         print(val_metrics['mae'])
         return
     
     if args.local_rank == 0:
         writer = SummaryWriter(
-            log_dir=f'runs/B4_n=2_m=9_bs={args.batch_size}'
+            log_dir=f'runs/' + args.experiment
         )
 
     best_mae = 100.0
@@ -211,12 +219,14 @@ def main_worker(local_rank, nprocs, args):
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
 
-        # lr_scheduler.step()
-        adjust_learning_rate(optimizer, epoch, args)
-        adjust_learning_rate(optimizer_class, epoch, args)
+        lr_scheduler.step()
+        # adjust_learning_rate(optimizer, epoch, args)
+        if args.local_rank == 0:
+            print('\lambda_0: {}'.format(args.lambda_0))
+            print('\lambda_now: {}'.format(args.lambda_0 * (epoch / args.epochs)))
 
-        train_metrics = train(train_loader, model, classifier, optimizer, optimizer_class, epoch, local_rank, args)
-        val_metrics = validate(val_loader, model, classifier, local_rank, args)
+        train_metrics = train(train_loader, model, optimizer, criterion, epoch, local_rank, args)
+        val_metrics = validate(val_loader, model, local_rank, args)
 
         if args.local_rank == 0:
             writer.add_scalar('Train_loss', train_metrics['loss'], epoch + 1)
@@ -226,45 +236,12 @@ def main_worker(local_rank, nprocs, args):
         best_mae = min(val_metrics['mae'], best_mae)
 
         if args.local_rank == 0 and is_best:
-            save_checkpoint(best_mae, model, classifier, optimizer, optimizer_class, args, epoch)
+            save_checkpoint(best_mae, model, optimizer, criterion, args, epoch)
     
     print('*** Best mae: {0}'.format(best_mae))
 
 
-    ### Stage 2 ###
-
-    # optimizer2 = torch.optim.SGD(model.parameters(), 0.001, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
-    # optimizer_class2 = torch.optim.SGD(classifier.parameters(), 0.001, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
-
-    # train_dataset2 = Train2("M", transform_t)
-    # train_sampler2 = torch.utils.data.distributed.DistributedSampler(train_dataset2)
-    # train_loader2 = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, num_workers=2, pin_memory=True, sampler=train_sampler)
-
-    # for epoch in range(args.epochs, args.epochs + 100):
-    #     train_sampler2.set_epoch(epoch)
-    #     val_sampler.set_epoch(epoch)
-
-    #     train_metrics = train(train_loader2, model, classifier, optimizer2, optimizer_class2, epoch, local_rank, args)
-    #     val_metrics = validate(val_loader, model, classifier, local_rank, args)
-
-    #     if args.local_rank == 0:
-    #         writer.add_scalar('Train_loss', train_metrics['loss'], epoch + 1)
-    #         writer.add_scalar('Val_mae', val_metrics['mae'], epoch + 1)
-
-    #     # lr_scheduler.step()
-    #     args.schedule = [180,190]
-    #     adjust_learning_rate(optimizer2, epoch, args)
-    #     adjust_learning_rate(optimizer_class2, epoch, args)
-
-    #     is_best = val_metrics['mae'] < best_mae 
-    #     best_mae = min(val_metrics['mae'], best_mae)
-
-    #     if args.local_rank == 0 and is_best:
-    #         save_checkpoint(best_mae, model, classifier, optimizer2, optimizer_class2, args, epoch)
-    
-    # print('*** Best mae: {0}'.format(best_mae))
-
-def train(train_loader, model, classifier, optimizer, optimizer_class, epoch, local_rank, args):
+def train(train_loader, model, optimizer, criterion, epoch, local_rank, args):
     batch_time = AverageMeter('Batch Time', ':6.4f')
     data_time = AverageMeter('Data', ':6.4f')
     losses = AverageMeter('Train Loss', ':6.4f')
@@ -284,8 +261,11 @@ def train(train_loader, model, classifier, optimizer, optimizer_class, epoch, lo
         label = label.cuda(local_rank, non_blocking=True)
 
         # with autocast():
+        # aug_output = criterion(model, images, target, args.lambda_0 * (epoch / args.epochs))
+
         output = model(images)
-        output = classifier(output)
+
+        output = F.softmax(output, dim=1)
         pred = torch.sum(output*rank, dim=1)
         mae = torch.sum(torch.abs(torch.sub(pred, target.float()))) / args.batch_size
         loss = kl_loss(output, label) + mae
@@ -299,13 +279,11 @@ def train(train_loader, model, classifier, optimizer, optimizer_class, epoch, lo
         losses.update(reduced_loss.item(), images.size(0))
 
         optimizer.zero_grad()
-        optimizer_class.zero_grad()
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5, norm_type=2)
 
         optimizer.step()
-        optimizer_class.step()
 
         batch_time.update(time.time() - end)
         end = time.time()
@@ -315,7 +293,7 @@ def train(train_loader, model, classifier, optimizer, optimizer_class, epoch, lo
         
     return OrderedDict([('loss', losses.avg)])
 
-def validate(val_loader, model, classifier, local_rank, args):
+def validate(val_loader, model, local_rank, args):
     batch_time = AverageMeter('Time', ':6.4f')
     Mae = AverageMeter('Mae', ':6.4f')
     top1 = AverageMeter('Acc@1', ':6.2f')
@@ -337,8 +315,8 @@ def validate(val_loader, model, classifier, local_rank, args):
             # with autocast():
             output = model(images)
             output2 = model(images)
-            output = classifier(output)
-            output2 = classifier(output2)
+            output = F.softmax(output, dim=1)
+            output2 = F.softmax(output2, dim=1)
             pred = (torch.sum(output*rank, dim=1) + torch.sum(output2*rank, dim=1)) / 2
             mae = torch.sum(torch.abs(torch.sub(pred, target.float()))) / float(target.size(0))
 
