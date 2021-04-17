@@ -20,8 +20,10 @@ RootDir = {'MS': '/ssd2/data/face/MS_Celeb_1M/imgs'}
 AllTrain = {'MS': '/ssd2/data/face/MS_Celeb_1M/txt/list.txt'}
 
 rootdir = '/ssd2/baozenghao/data/Age/MIVIA/caip_arccropped'
-trainlist = '/ssd2/baozenghao/data/Age/MIVIA/MIVIA_train.csv'
+# trainlist = '/ssd2/baozenghao/data/Age/MIVIA/MIVIA_train.csv'
+trainlist = '/ssd2/baozenghao/data/Age/MIVIA/training_caip_contest.csv'
 testlist = '/ssd2/baozenghao/data/Age/MIVIA/MIVIA_test.csv'
+# testlist = '/bzh/test.csv'
 
 def loadcsv(data_dir, file):
     imgs = list()
@@ -79,7 +81,6 @@ class TrainM(data.Dataset):
 class TestM(data.Dataset):
     def __init__(self, transform):
         imgs = loadcsv(rootdir, testlist) 
-        random.shuffle(imgs)
         self.imgs = imgs
         self.transform = transform
     def __getitem__(self, item):
