@@ -28,23 +28,24 @@ from efficientnet import EfficientNet
 from models import create_model, safe_model_name, resume_checkpoint, load_checkpoint,\
     convert_splitbn_model, model_parameters
 from utils import *
+from scheduler.cosine_lr import CosineLRScheduler
 from ISDA import ISDALoss
 from data import TrainM, TestM
 
 parser = argparse.ArgumentParser(description='Age Estimate Training and Evaluating')
 
-parser.add_argument('--batch_size', type=int, default=256)
-parser.add_argument('--lr', type=float, default=0.001)#0.001
+parser.add_argument('--batch_size', type=int, default=320)
+parser.add_argument('--lr', type=float, default=0.05)#0.001
 parser.add_argument('--weight_decay', type=float, default=4e-5)
 parser.add_argument('--momentum', type=float, default=0.9)
-parser.add_argument('--epochs', type=int, default=75)
-parser.add_argument('--start-epoch', default=34, type=int, metavar='N')
+parser.add_argument('--epochs', type=int, default=300)
+parser.add_argument('--start-epoch', default=0, type=int, metavar='N')
 parser.add_argument('--evaluation', type=bool, default=False)
-parser.add_argument('--checkpoints', type=str, default="/bzh/GTA/checkpoints/RegNetY_4G_33_model.pth")
+parser.add_argument('--checkpoints', type=str, default=None)
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('-p', '--print-freq', default=10, type=int, metavar='N')
 parser.add_argument('--seed', default=24, type=int)
-parser.add_argument('--experiment', type=str, default='RegNetY_4G_')
+parser.add_argument('--experiment', type=str, default='Swin_B_in22k_adamw_')
 parser.add_argument('--lambda_0', default=7.5, type=float,
                     help='The hyper-parameter \lambda_0 for ISDA, select from {1, 2.5, 5, 7.5, 10}. '
                          'We adopt 1 for DenseNets and 7.5 for ResNets and ResNeXts, except for using 5 for ResNet-101.')
@@ -152,7 +153,9 @@ def main():
 def main_worker(local_rank, nprocs, args):
     torch.distributed.init_process_group(backend='nccl', init_method='env://')
 
-    model = create_model('regnety_040', num_classes=101)
+    # model = create_model('regnety_040', num_classes=101)
+    model = create_model('swin_base_patch4_window7_224_in22k', num_classes=101)
+
     if args.local_rank == 0:
         print('Number of model parameters: {}'.format(sum([p.data.nelement() for p in model.parameters()])))
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -166,15 +169,15 @@ def main_worker(local_rank, nprocs, args):
     # criterion = ISDALoss(1792, 101).cuda(local_rank)
     criterion = None
 
-    optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
+    # optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
+    optimizer = torch.optim.AdamW(model.parameters(), eps=1e-8, betas=(0.9, 0.999), lr=5e-4, weight_decay=0.05)
 
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2, eta_min=0)
+    # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2, eta_min=0)
 
     if args.checkpoints is not None:
         checkpoints = torch.load(args.checkpoints, map_location=torch.device('cpu'))
         model.load_state_dict(checkpoints['model_state_dict']) 
-        # criterion =  checkpoints['criterion']
-        # args.start_epoch = checkpoints['epoch']
+        # load_checkpoint(model, args.checkpoints)
 
     transform_t = transforms.Compose([
         transforms.Resize(size=(224,224),interpolation=3),
@@ -188,7 +191,6 @@ def main_worker(local_rank, nprocs, args):
 
     transform = transforms.Compose([
         transforms.Resize(size=(224,224),interpolation=3),
-        # transforms.RandomResizedCrop(224, scale=(0.1,2.0), interpolation=3),
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -197,10 +199,15 @@ def main_worker(local_rank, nprocs, args):
     train_dataset = TrainM(transform)
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, num_workers=4, pin_memory=True, sampler=train_sampler)
+    itern = len(train_loader)
 
     val_dataset = TestM(transform)
     val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, num_workers=4, pin_memory=True, sampler=val_sampler)
+
+    # scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=itern, epochs=args.epochs)
+    scheduler = CosineLRScheduler(optimizer, t_initial=args.epochs*itern, t_mul=1., lr_min=5e-6, warmup_lr_init=5e-7,
+            warmup_t=20*itern, cycle_limit=1, t_in_epochs=False,)
 
     if args.evaluation:
         val_metrics = validate(val_loader, model, local_rank, args)
@@ -214,23 +221,26 @@ def main_worker(local_rank, nprocs, args):
         )
 
     best_mae = 100.0
+        
     for epoch in range(args.start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
 
-        lr_scheduler.step()
-        # adjust_learning_rate(optimizer, epoch, args)
+        # lr_scheduler.step()
 
-        if args.local_rank == 0:
-            print('\lambda_0: {}'.format(args.lambda_0))
-            print('\lambda_now: {}'.format(args.lambda_0 * (epoch / args.epochs)))
+        # if args.local_rank == 0:
+        #     print('\lambda_0: {}'.format(args.lambda_0))
+        #     print('\lambda_now: {}'.format(args.lambda_0 * (epoch / args.epochs)))
 
-        train_metrics = train(train_loader, model, optimizer, criterion, epoch, local_rank, args)
+        train_metrics = train(train_loader, model, optimizer, scheduler, criterion, epoch, local_rank, args)
         val_metrics = validate(val_loader, model, local_rank, args)
 
         if args.local_rank == 0:
             writer.add_scalar('Train_loss', train_metrics['loss'], epoch + 1)
             writer.add_scalar('Val_mae', val_metrics['mae'], epoch + 1)
+            for param_group in optimizer.param_groups:
+                writer.add_scalar('Lr_rate', param_group['lr'], epoch + 1)
+
 
         is_best = val_metrics['mae'] < best_mae 
         best_mae = min(val_metrics['mae'], best_mae)
@@ -238,10 +248,10 @@ def main_worker(local_rank, nprocs, args):
         if args.local_rank == 0 and is_best:
             save_checkpoint(model, args, epoch)
     
-    print('*** Best mae: {0}'.format(best_mae))
+    print('Best mae: {0}'.format(best_mae))
 
 
-def train(train_loader, model, optimizer, criterion, epoch, local_rank, args):
+def train(train_loader, model, optimizer, scheduler, criterion, epoch, local_rank, args):
     batch_time = AverageMeter('Batch Time', ':6.4f')
     data_time = AverageMeter('Data', ':6.4f')
     losses = AverageMeter('Train Loss', ':6.4f')
@@ -250,10 +260,9 @@ def train(train_loader, model, optimizer, criterion, epoch, local_rank, args):
     model.train()
 
     rank = torch.Tensor([i for i in range(101)]).cuda()
-    last_idx = len(train_loader) - 1
+    num_iter = len(train_loader)
     end = time.time()
     for i, (images, target, label) in enumerate(train_loader):
-        last_batch = i == last_idx
         data_time.update(time.time() - end)
 
         images = images.cuda(local_rank, non_blocking=True)
@@ -262,13 +271,12 @@ def train(train_loader, model, optimizer, criterion, epoch, local_rank, args):
 
         # with autocast():
         # aug_output = criterion(model, images, target, args.lambda_0 * (epoch / args.epochs))
-
-        output = model(images)
-
-        output = F.softmax(output, dim=1)
-        pred = torch.sum(output*rank, dim=1)
-        mae = torch.sum(torch.abs(torch.sub(pred, target.float()))) / args.batch_size
-        loss = kl_loss(output, label) + mae
+        with autocast():
+            output = model(images)
+            output = F.softmax(output, dim=1)
+            pred = torch.sum(output*rank, dim=1)
+            mae = torch.sum(torch.abs(torch.sub(pred, target.float()))) / args.batch_size
+            loss = kl_loss(output, label) + mae
 
         torch.distributed.barrier()
 
@@ -285,10 +293,13 @@ def train(train_loader, model, optimizer, criterion, epoch, local_rank, args):
 
         optimizer.step()
 
+        # scheduler.step()
+        scheduler.step_update(epoch * num_iter + i)
+
         batch_time.update(time.time() - end)
         end = time.time()
 
-        if args.local_rank == 0 and ((i + 1) % args.print_freq == 0 or last_batch):
+        if args.local_rank == 0 and (i + 1) % args.print_freq == 0:
             progress.display(i)
         
     return OrderedDict([('loss', losses.avg)])
@@ -312,14 +323,13 @@ def validate(val_loader, model, local_rank, args):
             images2 = images.cuda(local_rank, non_blocking=True)
             target = target.cuda(local_rank, non_blocking=True)
 
-            # with autocast():
-            output = model(images)
-            output2 = model(images2)
-            output = F.softmax(output, dim=1)
-            output2 = F.softmax(output2, dim=1)
-            pred = (torch.sum(output*rank, dim=1) + torch.sum(output2*rank, dim=1)) / 2
-
-            mae = torch.sum(torch.abs(torch.sub(pred, target.float()))) / float(target.size(0))
+            with autocast():
+                output = model(images)
+                output2 = model(images2)
+                output = F.softmax(output, dim=1)
+                output2 = F.softmax(output2, dim=1)
+                pred = (torch.sum(output*rank, dim=1) + torch.sum(output2*rank, dim=1)) / 2
+                mae = torch.sum(torch.abs(torch.sub(pred, target.float()))) / float(target.size(0))
 
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
 

@@ -20,8 +20,8 @@ RootDir = {'MS': '/ssd2/data/face/MS_Celeb_1M/imgs'}
 AllTrain = {'MS': '/ssd2/data/face/MS_Celeb_1M/txt/list.txt'}
 
 rootdir = '/ssd2/baozenghao/data/Age/MIVIA/caip_arccropped'
-# trainlist = '/ssd2/baozenghao/data/Age/MIVIA/MIVIA_train.csv'
-trainlist = '/ssd2/baozenghao/data/Age/MIVIA/training_caip_contest.csv'
+trainlist = '/ssd2/baozenghao/data/Age/MIVIA/MIVIA_train.csv'
+# trainlist = '/ssd2/baozenghao/data/Age/MIVIA/training_caip_contest.csv'
 testlist = '/ssd2/baozenghao/data/Age/MIVIA/MIVIA_test.csv'
 # testlist = '/bzh/test.csv'
 
@@ -67,7 +67,7 @@ class TrainM(data.Dataset):
         label = [i if i > 1e-15 else 1e-15 for i in label]
         label = torch.Tensor(label)
 
-        seq_rand = iaa.Sequential([iaa.RandAugment(n=2, m=9)])
+        seq_rand = iaa.Sequential([iaa.RandAugment(n=2, m=15)])
 
         cv_img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
         cv_img = seq_rand.augment_image(image=cv_img)

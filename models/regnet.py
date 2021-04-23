@@ -16,6 +16,7 @@ Hacked together by / Copyright 2020 Ross Wightman
 import numpy as np
 import torch.nn as nn
 
+from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from .helpers import build_model_with_cfg
 from .layers import ClassifierHead, AvgPool2dSame, ConvBnAct, SEModule, DropPath
 from .registry import register_model
@@ -60,7 +61,7 @@ def _cfg(url='', **kwargs):
     return {
         'url': url, 'num_classes': 1000, 'input_size': (3, 224, 224), 'pool_size': (7, 7),
         'crop_pct': 0.875, 'interpolation': 'bicubic',
-        'mean': (0.485, 0.456, 0.406), 'std': (0.229, 0.224, 0.225),
+        'mean': IMAGENET_DEFAULT_MEAN, 'std': IMAGENET_DEFAULT_STD,
         'first_conv': 'stem.conv', 'classifier': 'head.fc',
         **kwargs
     }
