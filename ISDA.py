@@ -114,6 +114,6 @@ class ISDALoss(nn.Module):
 
         self.estimator.update_CV(features.detach(), target_x)
 
-        isda_aug_y = self.isda_aug(model.module._fc, features, y, target_x, self.estimator.CoVariance.detach(), ratio)
+        isda_aug_y = self.isda_aug(model.module.classifier, features, y, target_x, self.estimator.CoVariance.detach(), ratio)
 
         return isda_aug_y, y

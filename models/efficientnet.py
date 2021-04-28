@@ -398,13 +398,17 @@ class EfficientNet(nn.Module):
         x = self.act2(x)
         return x
 
-    def forward(self, x):
+    def forward(self, x, isda=False):# add isda by bzh
         x = self.forward_features(x)
         x = self.global_pool(x)
         if self.drop_rate > 0.:
             x = F.dropout(x, p=self.drop_rate, training=self.training)
-        return self.classifier(x)
+        features = x.view(x.size(0), -1) # add features by bzh
 
+        if not isda:
+            return self.classifier(x)
+        else:
+            return self.classifier(x), features
 
 class EfficientNetFeatures(nn.Module):
     """ EfficientNet Feature Extractor
