@@ -33,21 +33,23 @@ parser.add_argument('--batch_size', type=int, default=256)
 parser.add_argument('--lr', type=float, default=0.01)#0.001
 parser.add_argument('--weight_decay', type=float, default=5e-4)
 parser.add_argument('--momentum', type=float, default=0.9)
-parser.add_argument('--epochs', type=int, default=35)
+parser.add_argument('--epochs', type=int, default=20)
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N')
 parser.add_argument('--evaluation', type=bool, default=False)
 parser.add_argument('--checkpoints', type=str, default=None)
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('-p', '--print-freq', default=10, type=int, metavar='N')
 parser.add_argument('--seed', default=24, type=int)
-parser.add_argument('--experiment', type=str, default='EfficientNetv2_T_')
+parser.add_argument('--experiment', type=str, default='EfficientNetV2_')
+parser.add_argument('--useonecycle', type=bool, default=True)
+
 
 def save_checkpoint(model, args, epoch):
     print('Best Model Saving...')
     torch.save({
         'model_state_dict': model.state_dict(),
         'epoch': epoch + 1
-    }, os.path.join('checkpoints', args.experiment + str(epoch) + '_model.pth'))
+    }, os.path.join('checkpoints', args.experiment + str(epoch) + '.pth'))
 
 def main():
     args = parser.parse_args()
@@ -100,7 +102,7 @@ def main_worker(local_rank, nprocs, args):
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        transforms.RandomErasing(probability = 0, sh = 0.4, r1 = 0.3, mean = [0.4914])
+        # transforms.RandomErasing(probability = 0, sh = 0.4, r1 = 0.3, mean = [0.4914])
     ])
 
     train_dataset = TrainM(transform_t)
@@ -112,7 +114,10 @@ def main_worker(local_rank, nprocs, args):
     val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, num_workers=8, pin_memory=True, sampler=val_sampler)
 
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=itern, epochs=args.epochs)
+    if args.useonecycle is True:
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=itern, epochs=args.epochs)
+    else:
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10,20,30], gamma=0.1)
 
     if args.evaluation:
         val_metrics = validate(val_loader, model, local_rank, args)
@@ -126,6 +131,10 @@ def main_worker(local_rank, nprocs, args):
         )
 
     best_mae = 100.0
+
+    for epoch in range(0, args.start_epoch):
+        if args.useonecycle is False:
+            scheduler.step()
         
     for epoch in range(args.start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)
@@ -133,12 +142,15 @@ def main_worker(local_rank, nprocs, args):
 
         train_metrics = train(train_loader, model, optimizer, scheduler, criterion, epoch, local_rank, args)
         val_metrics = validate(val_loader, model, local_rank, args)
-
+            
         if args.local_rank == 0:
             writer.add_scalar('Train_loss', train_metrics['loss'], epoch + 1)
             writer.add_scalar('Val_mae', val_metrics['mae'], epoch + 1)
             for param_group in optimizer.param_groups:
                 writer.add_scalar('Lr_rate', param_group['lr'], epoch + 1)
+
+        if args.useonecycle is False:
+            scheduler.step()
 
         is_best = val_metrics['mae'] < best_mae 
         best_mae = min(val_metrics['mae'], best_mae)

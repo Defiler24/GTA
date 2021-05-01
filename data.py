@@ -18,6 +18,8 @@ import imgaug.augmenters as iaa
 RootDir = {'C':'/ssd2/baozenghao/data/Age/CACD/CACD2000_arccropped/',
            'E':'/ssd1/data/face/age_data/data/MegaAge/megaage_asian_arccropped/',
            'I':'/ssd1/baozenghao/data/IMDB-WIKI/',
+           'L':'/ssd2/baozenghao/data/Age/CLAP16/CLAP16_arccrop/',
+           'LT':'/ssd2/baozenghao/data/Age/CLAP16/',
             'MS': '/ssd2/data/face/MS_Celeb_1M/imgs',
            'M':'/ssd1/data/face/age_data/data/Morph/Album2_arccropped/',
            'U': '/ssd1/data/face/age_data/data/UTKFace/UTKFACE_arccropped/'}

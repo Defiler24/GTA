@@ -137,7 +137,8 @@ def train(train_loader, model, optimizer, scheduler, criterion, epoch, local_ran
 
         optimizer.step()
 
-        scheduler.step()
+        if args.useonecycle is True:
+            scheduler.step()
 
         batch_time.update(time.time() - end)
         end = time.time()
