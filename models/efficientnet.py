@@ -366,7 +366,14 @@ class EfficientNet(nn.Module):
         self.global_pool, self.classifier = create_classifier(
             self.num_features, self.num_classes, pool_type=global_pool)
 
-        efficientnet_init_weights(self)
+        # #freeze BN
+        # for m in self.modules():
+        #     if isinstance(m, nn.BatchNorm2d):
+        #         m.eval()
+        #         m.weight.requires_grad = False
+        #         m.bias.requires_grad = False
+
+        #         efficientnet_init_weights(self)
 
     def as_sequential(self):
         layers = [self.conv_stem, self.bn1, self.act1]
@@ -399,6 +406,22 @@ class EfficientNet(nn.Module):
         if self.drop_rate > 0.:
             x = F.dropout(x, p=self.drop_rate, training=self.training)
         return self.classifier(x)
+    
+    def freeze_features(self):
+        for p in self.conv_stem.parameters():
+            p.requires_grad = False
+        for p in self.bn1.parameters():
+            p.requires_grad = False
+        for p in self.act1.parameters():
+            p.requires_grad = False
+        for p in self.blocks.parameters():
+            p.requires_grad = False
+        for p in self.conv_head.parameters():
+            p.requires_grad = False
+        for p in self.bn2.parameters():
+            p.requires_grad = False
+        for p in self.act2.parameters():
+            p.requires_grad = False
 
 
 class EfficientNetFeatures(nn.Module):

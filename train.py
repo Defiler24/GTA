@@ -1,5 +1,5 @@
 import argparse
-import time
+import time, math
 import datetime
 import os
 import random
@@ -22,6 +22,8 @@ from torch.cuda.amp import autocast as autocast
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from torch.nn import functional as F
+
+from data import AAR
 
 def reduce_mean(tensor, nprocs):
     rt = tensor.clone()
@@ -119,8 +121,58 @@ def train(train_loader, model, optimizer, scheduler, criterion, epoch, local_ran
         output = model(images)
         output = F.softmax(output, dim=1)
         pred = torch.sum(output*rank, dim=1)
-        mae = torch.sum(torch.abs(torch.sub(pred, target.float()))) / args.batch_size
-        loss = kl_loss(output, label) + mae
+        loss = kl_loss(output, label) + F.l1_loss(pred,target)
+
+        torch.distributed.barrier()
+
+        reduced_loss = reduce_mean(loss, args.nprocs)
+
+        torch.cuda.synchronize()
+
+        losses.update(reduced_loss.item(), images.size(0))
+
+        optimizer.zero_grad()
+        loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5, norm_type=2)
+
+        optimizer.step()
+
+        if args.useonecycle is True:
+            scheduler.step()
+
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        if args.local_rank == 0 and (i + 1) % args.print_freq == 0:
+            progress.display(i)
+        
+    return OrderedDict([('loss', losses.avg)])
+
+def train2(train_loader, model, optimizer, scheduler, criterion, epoch, local_rank, mae, args):
+    batch_time = AverageMeter('Batch Time', ':6.4f')
+    data_time = AverageMeter('Data', ':6.4f')
+    losses = AverageMeter('Train Loss', ':6.4f')
+    progress = ProgressMeter(len(train_loader), [batch_time, losses], prefix="Epoch: [{}]".format(epoch))
+
+    model.train()
+
+    rank = torch.Tensor([i for i in range(101)]).cuda()
+    num_iter = len(train_loader)
+    end = time.time()
+    for i, (images, target, label) in enumerate(train_loader):
+        data_time.update(time.time() - end)
+
+        images = images.cuda(local_rank, non_blocking=True)
+        target = target.cuda(local_rank, non_blocking=True)
+        label = label.cuda(local_rank, non_blocking=True)
+
+        output = model(images)
+        output = F.softmax(output, dim=1)
+        pred = torch.sum(output*rank, dim=1)
+        error = torch.abs(torch.sub(pred, target))
+        mean = (torch.ones(error.shape) * mae).cuda(local_rank, non_blocking=True)
+        loss = kl_loss(output, label) + F.mse_loss(error, mean)
 
         torch.distributed.barrier()
 
@@ -169,7 +221,7 @@ def validate(val_loader, model, local_rank, args):
             output = model(images)
             output = F.softmax(output, dim=1)
             pred = torch.sum(output*rank, dim=1)
-            mae = torch.sum(torch.abs(torch.sub(pred, target.float()))) / float(target.size(0))
+            mae = F.l1_loss(pred,target)
 
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
@@ -194,3 +246,48 @@ def validate(val_loader, model, local_rank, args):
     metrics = OrderedDict([('mae', Mae.avg), ('top1', top1.avg), ('top5', top5.avg)])
         
     return metrics
+
+def Score(model, local_rank, transform, mae, args):
+    total_mae = mae
+    MAE = []
+    for rank in range(8):
+        dataset = AAR(transform, rank)
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+        loader = torch.utils.data.DataLoader(dataset, batch_size=512, num_workers=4, pin_memory=True, sampler=sampler)
+        metrics = validate(loader, model, local_rank, args)
+        MAE.append(metrics['mae'])
+    sum = 0
+    for rank in range(8):
+        sum += (total_mae - MAE[rank]) * (total_mae - MAE[rank]) / 8
+    sigma = math.sqrt(sum)
+    aar = max(0, 7 - total_mae) + max(0, 3 - sigma)
+    if args.local_rank == 0:
+        print("Mae: ", total_mae)
+        print("Sigma: ", sigma)
+        print("AAR is ", aar)
+
+    return aar
+
+
+
+# args.classnum = np.zeros(101)
+# with open(args.trainlist, mode='r') as csv_file:
+#     gt = csv.reader(csv_file, delimiter=',')
+#     for row in gt:
+#         _, age = row[0], row[1]
+#         age = int(round(float(age)))
+#         for i in range(1, 82):
+#             if age == i:
+#                 args.classnum[i] += 1
+
+# for i in range(101):
+#     if args.classnum[i] == 0:
+#         args.classnum[i] = 1
+# bsce
+# output = model(images)
+# logit = output + weight_list.unsqueeze(0).expand(output.shape[0], -1).log()
+# output = F.softmax(output, dim=1)
+# pred = torch.sum(output*rank, dim=1)
+# logit = F.softmax(logit, dim=1)
+# # loss = F.kl_div(logit.log(), label, reduction='batchmean') + F.l1_loss(pred,target)#reduction='batchmean'
+# loss = kl_loss(logit, label) + F.l1_loss(pred,target)

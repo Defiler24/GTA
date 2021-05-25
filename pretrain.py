@@ -17,7 +17,7 @@ import torch.optim
 import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
-import transforms
+from torchvision import transforms
 from torch.cuda.amp import autocast as autocast
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
@@ -31,22 +31,19 @@ from model import CosineMarginProduct
 
 parser = argparse.ArgumentParser(description='Age Estimate Training and Evaluating')
 
-parser.add_argument('--batch_size', type=int, default=1600)
+parser.add_argument('--batch_size', type=int, default=665)
 parser.add_argument('--lr', type=float, default=0.1)#0.001
 parser.add_argument('--weight_decay', type=float, default=4e-5)
 parser.add_argument('--momentum', type=float, default=0.9)
-parser.add_argument('--epochs', type=int, default=25)
-parser.add_argument('--start-epoch', default=13, type=int, metavar='N')
+parser.add_argument('--epochs', type=int, default=16)
+parser.add_argument('--start-epoch', default=1, type=int, metavar='N')
 parser.add_argument('--evaluation', type=bool, default=False)
-parser.add_argument('--checkpoints', type=str, default="/bzh/GTA/Checkpoint/ResNet50_pre_12_model.pth")
+parser.add_argument('--checkpoints', type=str, default="/bzh/GTA/checkpoints/PreonG_0_model.pth")
 parser.add_argument('--local_rank', default=0, type=int)
-parser.add_argument('-p', '--print-freq', default=10, type=int, metavar='N')
-parser.add_argument('--schedule', type=int, nargs='+', default=[10,18,22])
+parser.add_argument('-p', '--print-freq', default=40, type=int, metavar='N')
+parser.add_argument('--schedule', type=int, nargs='+', default=[8,14])
 parser.add_argument('--seed', default=24, type=int)
-parser.add_argument('--experiment', type=str, default='ResNet50_pre2_')
-parser.add_argument('--lambda_0', default=7.5, type=float,
-                    help='The hyper-parameter \lambda_0 for ISDA, select from {1, 2.5, 5, 7.5, 10}. '
-                         'We adopt 1 for DenseNets and 7.5 for ResNets and ResNeXts, except for using 5 for ResNet-101.')
+parser.add_argument('--experiment', type=str, default='PreonG_')
 
 def reduce_mean(tensor, nprocs):
     rt = tensor.clone()
@@ -152,9 +149,9 @@ def main_worker(local_rank, nprocs, args):
 
     # model = EfficientNet.from_pretrained('efficientnet-b4', num_classes=101)
     # model = create_model('regnety_040', pretrained=True, num_classes=101)
-    model = create_model('resnet50', num_classes=101)
+    model = create_model('efficientnet_v2s', pretrained=True, num_classes=101)
 
-    classifier = CosineMarginProduct(101, 85742, s=32)
+    classifier = CosineMarginProduct(101, 360232, s=32)
     if args.local_rank == 0:
         print('Number of model parameters: {}'.format(sum([p.data.nelement() for p in model.parameters()])))
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -187,11 +184,10 @@ def main_worker(local_rank, nprocs, args):
         transforms.RandomRotation(degrees=(-10,10)),
         transforms.ColorJitter(brightness=0.125, contrast=0.125, saturation=0.125),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        transforms.RandomErasing(probability = 0, sh = 0.4, r1 = 0.3, mean = [0.4914])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    train_dataset = Face("MS", True, transform)
+    train_dataset = Face("G", True, transform)
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, num_workers=4, pin_memory=True, sampler=train_sampler)
     best_acc = 0.0

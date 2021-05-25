@@ -17,7 +17,7 @@ import torch.optim
 import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
-import transforms
+from torchvision import transforms
 import numpy as np
 from torch.nn import functional as F
 import math
@@ -29,7 +29,7 @@ from train import validate
 parser = argparse.ArgumentParser(description='Age Estimate Training and Evaluating')
 
 parser.add_argument('--batch_size', type=int, default=4096)
-parser.add_argument('--checkpoints', type=str, default="/bzh/GTA/Checkpoint/EfficientNetv2_T_34_model.pth")
+parser.add_argument('--checkpoints', type=str, default="/bzh/GTA/checkpoints/1of2_glink_23.pth")
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('-p', '--print-freq', default=10, type=int, metavar='N')
 parser.add_argument('--seed', default=24, type=int)

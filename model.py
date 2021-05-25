@@ -43,4 +43,3 @@ class CosineMarginProduct(nn.Module):
 
 def ClassifierF(num_classes=85742):
     return Classifier(num_classes=num_classes)
-

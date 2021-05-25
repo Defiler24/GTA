@@ -1,7 +1,7 @@
 import argparse
 import time
 import datetime
-import os
+import os, csv
 import random
 import shutil
 import warnings
@@ -24,25 +24,25 @@ import numpy as np
 from torch.nn import functional as F
 
 from models import create_model
-from data import TrainM, TestM
-from train import train, validate
+from data import TrainM, TestM, Balance
+from train import train, validate, Score, train2
 
 parser = argparse.ArgumentParser(description='Age Estimate Training and Evaluating')
 
 parser.add_argument('--batch_size', type=int, default=256)
-parser.add_argument('--lr', type=float, default=0.01)#0.001
+parser.add_argument('--lr', type=float, default=0.005)#
 parser.add_argument('--weight_decay', type=float, default=5e-4)
 parser.add_argument('--momentum', type=float, default=0.9)
-parser.add_argument('--epochs', type=int, default=20)
+parser.add_argument('--epochs', type=int, default=24)
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N')
 parser.add_argument('--evaluation', type=bool, default=False)
-parser.add_argument('--checkpoints', type=str, default=None)
+parser.add_argument('--checkpoints', type=str, default="/bzh/GTA/Checkpoint/1of2_glink_23.pth")
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('-p', '--print-freq', default=10, type=int, metavar='N')
 parser.add_argument('--seed', default=24, type=int)
-parser.add_argument('--experiment', type=str, default='EfficientNetV2_')
+parser.add_argument('--experiment', type=str, default='2of2_mae_')
 parser.add_argument('--useonecycle', type=bool, default=True)
-
+parser.add_argument('--stage', type=int, default=2)
 
 def save_checkpoint(model, args, epoch):
     print('Best Model Saving...')
@@ -59,8 +59,9 @@ def main():
     torch.cuda.manual_seed(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
-    cudnn.benchmark = True
+
     cudnn.deterministic = True
+    cudnn.benchmark = False
     
     args.nprocs = torch.cuda.device_count()
     main_worker(args.local_rank, args.nprocs, args)
@@ -68,7 +69,9 @@ def main():
 def main_worker(local_rank, nprocs, args):
     torch.distributed.init_process_group(backend='nccl', init_method='env://')
 
-    model = create_model('efficientnet_v2s', pretrained=True, num_classes=101)
+    model = create_model('efficientnet_v2s', num_classes=101)#, pretrained=True
+    if args.stage == 2:
+        model.freeze_features()
 
     if args.local_rank == 0:
         print('Number of model parameters: {}'.format(sum([p.data.nelement() for p in model.parameters()])))
@@ -82,12 +85,16 @@ def main_worker(local_rank, nprocs, args):
 
     criterion = None
 
+    if args.stage == 2:
+        args.lr = 0.001
+        args.epochs = 8
+
     optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
 
     if args.checkpoints is not None:
         checkpoints = torch.load(args.checkpoints, map_location=torch.device('cpu'))
         model.load_state_dict(checkpoints['model_state_dict']) 
-
+    
     transform = transforms.Compose([
         transforms.Resize(size=(224,224),interpolation=3),
         transforms.ToTensor(),
@@ -97,15 +104,16 @@ def main_worker(local_rank, nprocs, args):
 
     transform_t = transforms.Compose([
         transforms.Resize(size=(224,224),interpolation=3),
-        # transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2,),
         transforms.ColorJitter(brightness=0.125, contrast=0.125, saturation=0.125),
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        # transforms.RandomErasing(probability = 0, sh = 0.4, r1 = 0.3, mean = [0.4914])
     ])
 
-    train_dataset = TrainM(transform_t)
+    if args.stage == 1:
+        train_dataset = TrainM(transform_t)
+    if args.stage == 2:
+        train_dataset = Balance(transform_t)
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, num_workers=8, pin_memory=True, sampler=train_sampler)
     itern = len(train_loader)
@@ -122,7 +130,6 @@ def main_worker(local_rank, nprocs, args):
     if args.evaluation:
         val_metrics = validate(val_loader, model, local_rank, args)
         print(val_metrics['mae'])
-        torch.save(model.module.state_dict(), os.path.join('checkpoints', 'single.pth'))
         return
     
     if args.local_rank == 0:
@@ -130,17 +137,17 @@ def main_worker(local_rank, nprocs, args):
             log_dir=f'runs/' + args.experiment
         )
 
-    best_mae = 100.0
+    best_score = 7
+    best_mae = 100
 
-    for epoch in range(0, args.start_epoch):
-        if args.useonecycle is False:
-            scheduler.step()
-        
     for epoch in range(args.start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
-
-        train_metrics = train(train_loader, model, optimizer, scheduler, criterion, epoch, local_rank, args)
+        if args.stage == 1:
+            train_metrics = train(train_loader, model, optimizer, scheduler, criterion, epoch, local_rank, args)
+        if args.stage == 2:
+            mae = 1.72
+            train_metrics = train2(train_loader, model, optimizer, scheduler, criterion, epoch, local_rank, mae, args)
         val_metrics = validate(val_loader, model, local_rank, args)
             
         if args.local_rank == 0:
@@ -152,13 +159,23 @@ def main_worker(local_rank, nprocs, args):
         if args.useonecycle is False:
             scheduler.step()
 
-        is_best = val_metrics['mae'] < best_mae 
-        best_mae = min(val_metrics['mae'], best_mae)
+        if args.stage == 1:
+            is_best = val_metrics['mae'] < best_mae 
+            best_mae = min(val_metrics['mae'], best_mae)
+        
+        if args.stage == 2:
+            score = Score(model, local_rank, transform, val_metrics['mae'], args)
+            is_best = score > best_score 
+            best_score = max(score, best_score)
 
         if args.local_rank == 0 and is_best:
             save_checkpoint(model, args, epoch)
-    
-    print('Best mae: {0}'.format(best_mae))
+
+    if args.local_rank == 0:
+        if args.stage == 1:
+            print('Best Mae: {0}'.format(best_mae))
+        else:
+            print('Best Score: {0}'.format(best_score))
 
 if __name__ == '__main__':
     main()

@@ -18,22 +18,29 @@ import imgaug.augmenters as iaa
 RootDir = {'C':'/ssd2/baozenghao/data/Age/CACD/CACD2000_arccropped/',
            'E':'/ssd1/data/face/age_data/data/MegaAge/megaage_asian_arccropped/',
            'I':'/ssd1/baozenghao/data/IMDB-WIKI/',
-           'L':'/ssd2/baozenghao/data/Age/CLAP16/CLAP16_arccrop/',
-           'LT':'/ssd2/baozenghao/data/Age/CLAP16/',
+           'LO':'/ssd2/baozenghao/data/Age/CLAP16/CLAP16_arccrop/',
+           'L':'/ssd2/baozenghao/data/Age/CLAP16/CLAP16_arccrop/train/',
+           'LT':'/ssd2/baozenghao/data/Age/CLAP16/train/',
             'MS': '/ssd2/data/face/MS_Celeb_1M/imgs',
+            'G': '/ssd2/data/face/Glint360k/imgs',
            'M':'/ssd1/data/face/age_data/data/Morph/Album2_arccropped/',
            'U': '/ssd1/data/face/age_data/data/UTKFace/UTKFACE_arccropped/'}
 
 AllTrain = {'C': '/ssd2/baozenghao/data/Age/CACD/txt/big_noise_images_shuffle_renamed.txt',
             'E': '/ssd1/data/face/age_data/data/MegaAge/txt/MegaAge_Asian_train.txt',
             'I': '/ssd1/baozenghao/data/IMDB-WIKI/txt/imdb_wiki_CLEAN_train.txt',
+            'L': '/ssd2/baozenghao/data/Age/CLAP16/txt/train.txt',
+            'LT': '/ssd2/baozenghao/data/Age/CLAP16/txt/train.txt',
             'MS': '/ssd2/data/face/MS_Celeb_1M/txt/list.txt',
+            'G': '/ssd2/data/face/Glint360k/txt/list.txt',
             'M': '/ssd1/data/face/age_data/data/Morph/txt/RANDOM_80_20/morph_random_80_20_train.txt',
             'U': '/ssd1/data/face/age_data/data/UTKFace/txt/utkface_train.txt'}
 
 AllTest = {'C': '/ssd2/baozenghao/data/Age/CACD/txt/small_noise_images_rank345_renamed.txt',
             'E': '/ssd1/data/face/age_data/data/MegaAge/txt/MegaAge_Asian_test.txt',
             'I': '/ssd1/baozenghao/data/IMDB-WIKI/txt/imdb_wiki_CLEAN_test.txt',
+            'LO': '/ssd2/baozenghao/data/Age/CLAP16/txt/chalearn16_AG_test.txt',
+            'LT': '/ssd2/baozenghao/data/Age/CLAP16/txt/chalearn16_AG_test.txt',
             'M': '/ssd1/data/face/age_data/data/Morph/txt/RANDOM_80_20/morph_random_80_20_test.txt',
             'U': '/ssd1/data/face/age_data/data/UTKFace/txt/utkface_test.txt'}
 
@@ -80,6 +87,9 @@ def loadcsv(data_dir, file):
             imgs.append((img_path, age))
     return imgs
 
+# def loadclass(data_dir, file):
+
+
 def loadrank(data_dir, file, rank):
     imgs = list()
     with open(file, mode='r') as csv_file:
@@ -88,9 +98,13 @@ def loadrank(data_dir, file, rank):
             img_name, age = row[0], row[1]
             img_path = os.path.join(data_dir, img_name)
             age = int(round(float(age)))
-            if age > 10 * rank and age <= 10 * (rank + 1):
+            if age > 10 * rank and age <= 10 * (rank + 1) and rank != 7:
+                imgs.append((img_path, age))
+            if rank == 7 and age > 10 * rank:
                 imgs.append((img_path, age))
     return imgs
+
+
 
 def loadage(data_dir, file, shuffle=True):
     imgs = list()
@@ -99,29 +113,73 @@ def loadage(data_dir, file, shuffle=True):
             contents = eachline.strip().split(' ')
             img_name, age = contents[0], contents[1]
             img_path = os.path.join(data_dir, img_name)
-            age = int(age)
+            age = int(round(float(age)))
             # if age > 15 and age < 61:#16--60
             imgs.append((img_path, age))
     if shuffle:
         random.shuffle(imgs)
     return imgs
 
-def loadface(data_dir, image_list_file, shuffle=False):
+def loadface(data_dir, image_list_file):
     imgs = list()
     with open(image_list_file) as f:
         for eachline in f:
             contents = eachline.strip().split('/')
             label, img_name = contents[0], contents[1]
             img_path = os.path.join(data_dir, label, img_name)
-            label = int(label)
-            # if age > 15 and age < 61:#16--60
+            label = int(label[3:])
             imgs.append((img_path, label))
-    if shuffle:
-        random.shuffle(imgs)
     return imgs
 
 def normal_sampling(mean, label_k, std=1):
     return math.exp(-(label_k-mean)**2/(2*std**2))/(math.sqrt(2*math.pi)*std)
+
+class Balance(data.Dataset):
+    def __init__(self, transform):
+        imgs = loadcsv(rootdir, trainlist) 
+        self.transform = transform
+        self.class_dict = self._get_class_dict()
+        self.imgs = imgs
+    def _get_class_dict(self):
+        class_dict = dict()
+        for i in range(1,82):
+            class_dict[str(i)] = []
+        with open(trainlist, mode='r') as csv_file:
+            gt = csv.reader(csv_file, delimiter=',')
+            for i, row in enumerate(gt):
+                age = int(round(float(row[1])))
+                for j in range(1, 82):
+                    if age == j:
+                        class_dict[str(j)].append(i)
+        return class_dict
+
+    def __getitem__(self, index):
+        sample_class = random.randint(1, 81)
+        sample_indexes = self.class_dict[str(sample_class)]
+        index = random.choice(sample_indexes)
+        
+        img_path, age = self.imgs[index]
+        age = int(round(float(age)))
+        img_path = os.path.join(rootdir, img_path)
+
+        img = Image.open(img_path).convert("RGB")
+
+        label = [normal_sampling(int(age), i) for i in range(101)]
+        label = [i if i > 1e-15 else 1e-15 for i in label]
+        label = torch.Tensor(label)
+
+        seq_rand = iaa.Sequential([iaa.RandAugment(n=2, m=10)])
+
+        cv_img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+        cv_img = seq_rand.augment_image(image=cv_img)
+        img = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
+
+        img = self.transform(img)
+        return img, age, label
+
+    def __len__(self):
+        return len(self.imgs)
+
 
 class TrainM(data.Dataset):
     def __init__(self, transform):
@@ -137,7 +195,7 @@ class TrainM(data.Dataset):
         label = [i if i > 1e-15 else 1e-15 for i in label]
         label = torch.Tensor(label)
 
-        seq_rand = iaa.Sequential([iaa.RandAugment(n=2, m=9)])
+        seq_rand = iaa.Sequential([iaa.RandAugment(n=2, m=10)])
 
         cv_img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
         cv_img = seq_rand.augment_image(image=cv_img)
@@ -213,11 +271,11 @@ class Train(data.Dataset):
         label = [i if i > 1e-15 else 1e-15 for i in label]
         label = torch.Tensor(label)
 
-        seq_rand = iaa.Sequential([iaa.RandAugment(n=2, m=9)])
+        # seq_rand = iaa.Sequential([iaa.RandAugment(n=2, m=9)])
 
-        cv_img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
-        cv_img = seq_rand.augment_image(image=cv_img)
-        img = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
+        # cv_img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+        # cv_img = seq_rand.augment_image(image=cv_img)
+        # img = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
 
         img = self.transform(img)
         return img, age, label
